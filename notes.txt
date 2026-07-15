@@ -1,0 +1,61 @@
+INGEST.PY
+
+https://claude.ai/share/f940c529-6a02-4526-a773-17475fc625a4
+
+my doubt:
+explain the flow
+
+say a webhook is fired, now diff will be extracted,
+but first we will have a qdrant db which is storing the information of the whole repo
+so first like when webhook will be fired, the diff will be extracted, also the qdrant quering will be done, and we will get top 5 dependent files from it right????
+
+
+go and explain me this code working, not line by line, but block wise block also the flow
+
+
+claude response:
+Yes, your mental model is right — this script is only the **indexing/offline phase**. The webhook flow you're describing is the **query/online phase**, and they're two separate pipelines that share the same Qdrant collection. Let me break down what's happening in `ingest.py`, then connect it to your webhook flow.
+
+## Block-wise breakdown of `ingest.py`
+
+**Block 1 — Setup (client + collection)**
+Loads your Gemini API key, spins up a Qdrant client (in-memory for now), and creates a collection with `size=768` (matching the embedding model's output dimension) and cosine distance as the similarity metric. This just prepares an empty "vector table" waiting to be filled.
+
+**Block 2 — `extract_code_blocks` (the AST parser)**
+Takes one Python file, parses it into an AST, then walks the tree looking specifically for `FunctionDef` and `ClassDef` nodes. For each one it finds, it uses `ast.get_source_segment` to pull out the *exact* original source text of that function/class (not a re-serialized version — the real code, comments and all). This is what gives you clean, logically complete chunks instead of arbitrary character-count splits.
+
+**Block 3 — `ingest_repository` (the orchestrator)**
+This is the actual pipeline:
+1. `os.walk` recursively finds every `.py` file in the repo (skipping `venv`)
+2. For each file → calls Block 2 to get its function/class chunks
+3. For each chunk → sends the raw code text to Gemini's `text-embedding-004` to get a 768-dim vector
+4. Wraps `{vector, payload}` into a `PointStruct`, where the payload carries the metadata (filepath, name, type, and the raw code itself — this is important, more below)
+5. Batches all points and does one `qdrant.upsert()` at the end
+
+**Block 4 — entry point**
+Just kicks off `ingest_repository(".")` on the current directory when you run the script directly.
+
+## Why the payload matters
+Qdrant's search only returns you a vector + its similarity score — it doesn't hand you back readable code. That's why every point's payload also stores the raw `code` string alongside the vector. So when a query later returns "these 5 points matched," you don't need a second DB lookup — Qdrant gives you the code directly in the payload of the hit.
+
+## Now — your webhook flow question
+
+You're correct, and here's the full picture stitched together:
+
+**Offline (this script, run once / on repo updates):**
+Repo → AST chunk into functions/classes → embed each → store in Qdrant with code in payload.
+
+**Online (what fires per PR):**
+1. Webhook fires on a PR event → you fetch the diff (e.g. via GitHub API)
+2. You extract the **changed functions/hunks** from that diff — ideally also via AST, so you're comparing whole logical units, not raw diff lines
+3. You embed *those changed chunks* using the same `text-embedding-004` model (critical: same model as ingestion, or vectors live in different spaces and similarity is meaningless)
+4. You query Qdrant with that embedding → `qdrant.search(collection_name=..., query_vector=..., limit=5)` → get back the top-k most similar/dependent code blocks from the rest of the repo, complete with their code from the payload
+5. Those top-k blocks become the **context** you stuff into your review-agent's prompt alongside the diff itself, so the LLM reviewing the PR knows "this changed function is called by / structurally similar to these other 5 places in the codebase"
+
+So yes — webhook → diff extraction → embed the diff chunks → Qdrant similarity search → top-k dependent/related files/functions → feed all of that (diff + retrieved context) into your review orchestrator. The ingestion script you just wrote is what populates the database that step 4 queries against.
+
+One thing worth flagging for your notebook: right now `QdrantClient(":memory:")` means the whole index dies when the script exits — fine for testing, but your webhook-triggered query process would need a persistent Qdrant (local server or Qdrant Cloud) so the index survives between the ingestion run and the actual PR event.
+
+
+
+RETRIEVE.PY
