@@ -1,83 +1,174 @@
-# 🚀 Multi-Agent CI/CD Pull Request Reviewer
+# 🚀 Autonomous CI/CD PR Review Swarm
 
-An event-driven, autonomous code review pipeline powered by multi-agent AI orchestration.
+An event-driven, stateful microservice that intercepts GitHub webhooks and orchestrates a highly concurrent 5-agent AI swarm to review Pull Requests.
 
-This infrastructure tool intercepts GitHub webhooks when a Pull Request is created or updated, extracts the raw `diff`, and routes it to specialized LLM agents for Security, Performance, and Style analysis in parallel. An Orchestrator agent compiles the findings into a single consensus report and publishes it directly to the GitHub PR interface.
+Unlike naive LLM wrappers, this system uses a **self-healing vector memory** to retain project-level context and a **deterministic Python state machine** to enforce strict 5/5 consensus before allowing code to merge. This reduces hallucinations and improves reliability for production code review workflows.
 
-## 🏗️ System Architecture
+---
 
-* **Event Trigger:** GitHub Webhooks (`opened`, `synchronize`)
-* **API Gateway:** FastAPI (Python)
-* **AI Orchestration:** LangGraph (stateful multi-agent graph)
-* **LLM Engine:** Google Gemini 2.5 Flash
-* **Deployment:** Render (cloud container)
+## 🏗️ Core Architecture
 
-## ⚙️ How It Works
+### 1. The Asynchronous Gateway
 
-1. **Extraction:** The FastAPI endpoint receives the webhook payload and fetches the raw code diff from the GitHub REST API.
-2. **Fan-Out (Parallel Execution):** LangGraph injects the diff into a state machine and simultaneously triggers three specialized agents:
+GitHub webhooks enforce a strict timeout window. This FastAPI service uses `BackgroundTasks` to immediately return a `200 OK` response to GitHub, while offloading heavy AI computation and repository ingestion to background workers.
 
-   * 🛡️ **Security Agent:** Scans for hardcoded credentials, SQL injection risks, and vulnerabilities.
-   * 🚀 **Performance Agent:** Identifies inefficient logic, O(N²) bottlenecks, and memory issues.
-   * 💅 **Style Agent:** Checks naming conventions, readability, and code consistency.
-3. **Fan-In (Consensus):** An Orchestrator node waits for all agents to finish, merges their independent reports, and formats a clean Markdown review.
-4. **Delivery:** The backend pushes the compiled review back to the GitHub PR as an automated comment.
+### 2. Self-Healing Codebase Memory
 
-## 🛠️ Local Setup
+Designed for ephemeral cloud environments such as Render. If the system starts with an empty state, it automatically clones the target repository, parses the codebase using Python Abstract Syntax Trees (`ast`), and stores function-level embeddings in **Qdrant**.
 
-If you want to run this CI/CD pipeline locally:
+### 3. The Strict Consensus Engine
 
-### 1. Clone the repository
+The AI does not make the final merge decision. Five LangGraph agents run in parallel, and a pure Python state machine tallies their results. If the PR does not receive a perfect 5/5 approval, the merge is blocked.
+
+---
+
+## ⚙️ Multi-Agent Swarm
+
+When a Pull Request is opened, the diff is analyzed and semantically matched against the vector memory. Relevant context is fetched from Qdrant using cosine similarity, then passed to five specialized agents:
+
+* 🛡️ **Security Agent**
+  Scans for hardcoded credentials, injection risks, and vulnerabilities.
+
+* 🚀 **Performance Agent**
+  Identifies inefficient logic, Big-O bottlenecks, and memory leaks.
+
+* 💅 **Style Agent**
+  Enforces naming conventions, readability, and code consistency.
+
+* 🧪 **QA / Test Agent**
+  Detects missing unit tests and unhandled edge cases.
+
+* 👔 **PM Agent**
+  Evaluates scope creep, over-engineering, and product alignment.
+
+---
+
+## 🛠️ Tech Stack
+
+* **API & Routing:** FastAPI, Python `BackgroundTasks`
+* **AI Orchestration:** LangGraph
+* **Vector Database:** Qdrant
+* **Embeddings & LLM:** Google Gemini 2.5 Flash, `gemini-embedding-001`
+* **Parsing:** Python `ast` module
+
+---
+
+## 💻 Local Setup & Testing
+
+To run this pipeline locally, first build the memory bank, then trigger the webhook.
+
+### 1. Clone & Install
 
 ```bash
 git clone https://github.com/YOUR_USERNAME/pr-reviewer.git
 cd pr-reviewer
-```
 
-### 2. Create a virtual environment and install dependencies
-
-**Windows**
-
-```bash
+# Create virtual environment
 python -m venv venv
+
+# Windows
 venv\Scripts\activate
-pip install -r requirements.txt
-```
 
-**Linux/macOS**
-
-```bash
-python -m venv venv
+# Linux/macOS
 source venv/bin/activate
+
 pip install -r requirements.txt
 ```
 
-### 3. Create a `.env` file in the root directory
+### 2. Environment Variables
+
+Create a `.env` file in the root directory:
 
 ```env
 GITHUB_TOKEN=your_github_personal_access_token
-GOOGLE_API_KEY=your_gemini_api_key
-GITHUB_WEBHOOK_SECRET=your_webhook_secret
+GEMINI_API_KEY=your_gemini_api_key
 ```
 
-### 4. Run the local server
+### 3. Build the Memory Bank
+
+Before the AI can review code, it must ingest the codebase.
+
+```bash
+python ingest.py
+```
+
+Expected output:
+
+```bash
+✅ Successfully ingested X code blocks
+```
+
+### 4. Start the Webhook Server
 
 ```bash
 uvicorn main:app --reload
 ```
 
-## 🔁 Production Flow
+### 5. Simulate a GitHub Webhook
 
-1. A developer opens or updates a Pull Request on GitHub.
-2. GitHub sends a webhook to the live Render endpoint.
-3. FastAPI receives the event and fetches the PR diff.
-4. LangGraph fans out the diff to multiple Gemini-based agents.
-5. The orchestrator combines the results into one review.
-6. The review is posted back to the PR as a GitHub comment.
+Use Postman or `curl` to send a `POST` request to:
 
-## ✨ Why this is useful
+```text
+http://localhost:8000/webhook
+```
 
-* Automates code review for every PR
-* Checks different concerns in parallel
-* Produces a single consolidated review
-* Fits naturally into a CI/CD workflow
+Headers:
+
+```text
+X-GitHub-Event: pull_request
+```
+
+Body: provide a dummy GitHub PR payload containing a target `clone_url` and `repo_full_name`.
+
+---
+
+## 🔁 Production Lifecycle
+
+When deployed to a cloud provider with ephemeral storage, such as Render free tier, the system behaves autonomously:
+
+1. **Amnesia Boot:** The server starts with an empty Qdrant database.
+2. **Webhook Catch:** A PR is opened. FastAPI catches the payload, returns `200 OK`, and sends the job to the background.
+3. **Autonomous Sync:** The background task detects an empty database, clones the `main` branch, ingests AST vectors into Qdrant, and cleans up temporary files.
+4. **Swarm Execution:** The PR diff is semantically searched against the rebuilt memory, and the five LangGraph agents run in parallel.
+5. **Delivery:** The orchestrator calculates consensus and posts the formatted Markdown review directly to the GitHub PR timeline via the REST API.
+
+---
+
+## 📌 Highlights
+
+* Event-driven architecture for CI/CD workflows
+* Background task handling for fast webhook acknowledgment
+* AST-based repository ingestion
+* Qdrant-powered project memory
+* Parallel multi-agent code review
+* Deterministic consensus enforcement before merge
+
+---
+
+## 📄 Example Flow
+
+```text
+GitHub PR Opened
+→ Webhook Received
+→ Immediate 200 OK Response
+→ Background Ingestion / Memory Sync
+→ Qdrant Retrieval
+→ 5-Agent Parallel Review
+→ Consensus Engine
+→ GitHub PR Comment Posted
+```
+
+---
+
+## ✅ Outcome
+
+This architecture is designed to demonstrate:
+
+* distributed systems thinking
+* production webhook handling
+* ephemeral storage recovery
+* vector-based semantic memory
+* concurrent agent orchestration
+* deterministic merge control
+
+If needed, I can also turn this into a more polished **GitHub-style README** with badges, table of contents, and cleaner wording.
