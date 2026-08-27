@@ -1,174 +1,229 @@
-# 🚀 Autonomous CI/CD PR Review Swarm
+# Autonomous CI/CD PR Review Swarm
 
-An event-driven, stateful microservice that intercepts GitHub webhooks and orchestrates a highly concurrent 5-agent AI swarm to review Pull Requests.
+An event-driven service that reviews GitHub pull requests with five specialised
+LLM reviewers running concurrently, retrieves relevant existing code from a
+vector index of the repository, and gates the merge behind a unanimous verdict
+computed in Python.
 
-Unlike naive LLM wrappers, this system uses a **self-healing vector memory** to retain project-level context and a **deterministic Python state machine** to enforce strict 5/5 consensus before allowing code to merge. This reduces hallucinations and improves reliability for production code review workflows.
-
----
-
-## 🏗️ Core Architecture
-
-### 1. The Asynchronous Gateway
-
-GitHub webhooks enforce a strict timeout window. This FastAPI service uses `BackgroundTasks` to immediately return a `200 OK` response to GitHub, while offloading heavy AI computation and repository ingestion to background workers.
-
-### 2. Self-Healing Codebase Memory
-
-Designed for ephemeral cloud environments such as Render. If the system starts with an empty state, it automatically clones the target repository, parses the codebase using Python Abstract Syntax Trees (`ast`), and stores function-level embeddings in **Qdrant**.
-
-### 3. The Strict Consensus Engine
-
-The AI does not make the final merge decision. Five LangGraph agents run in parallel, and a pure Python state machine tallies their results. If the PR does not receive a perfect 5/5 approval, the merge is blocked.
+Deployed on Render free tier, where the filesystem is ephemeral — so the vector
+memory rebuilds itself from source on a cold boot.
 
 ---
 
-## ⚙️ Multi-Agent Swarm
+## How it works
 
-When a Pull Request is opened, the diff is analyzed and semantically matched against the vector memory. Relevant context is fetched from Qdrant using cosine similarity, then passed to five specialized agents:
+```
+PR opened / pushed
+   │
+   ▼
+POST /webhook ──── HMAC-verify signature ──── reject 401 if unsigned
+   │
+   ├── claim (repo, head_sha) ──── duplicate delivery? return 200, do nothing
+   │
+   ├── BackgroundTasks.add_task(...)
+   └── return 200  ◄── inside GitHub's ~10s delivery window
+                          │
+        ┌─────────────────┘  (Starlette runs the task after the response is sent)
+        ▼
+   commit status → pending
+        │
+   ensure_memory()  ── 0 vectors? ── git clone --depth 1 → AST chunk → embed → Qdrant
+        │                            (warm process: one count(), returns immediately)
+        ▼
+   GET /pulls/{n} with Accept: vnd.github.v3.diff
+        │
+   search_codebase(diff)  ── split diff per file → embed each → top-3 per file
+        │                     → merge by best cosine score → 8 unique blocks
+        ▼
+   ┌──────────────── LangGraph: one superstep, five nodes ────────────────┐
+   │  Security    Performance    Style    QA / Tests    Product          │
+   └──────────────────────────┬───────────────────────────────────────────┘
+                              ▼
+                    consensus gate (pure Python)
+                              │
+              5/5 ──► status: success ──┐
+              < 5 ──► status: failure ──┴──► post review comment
+```
 
-* 🛡️ **Security Agent**
-  Scans for hardcoded credentials, injection risks, and vulnerabilities.
+### 1. The asynchronous gateway
 
-* 🚀 **Performance Agent**
-  Identifies inefficient logic, Big-O bottlenecks, and memory leaks.
+GitHub allows roughly 10 seconds to acknowledge a webhook delivery. A five-reviewer
+swarm takes far longer than that, and a cold boot longer still. So `/webhook` does
+only the cheap work — verify, filter, de-duplicate — and hands the review to a
+`BackgroundTask`, which Starlette runs *after* the 200 has been written to the socket.
 
-* 💅 **Style Agent**
-  Enforces naming conventions, readability, and code consistency.
+Deliveries are de-duplicated on `(repo, head_sha)`, because webhooks are
+at-least-once and `synchronize` fires on every push to the branch.
 
-* 🧪 **QA / Test Agent**
-  Detects missing unit tests and unhandled edge cases.
+### 2. Self-healing vector memory
 
-* 👔 **PM Agent**
-  Evaluates scope creep, over-engineering, and product alignment.
+Render wipes the disk on every deploy and every wake from spin-down, so the
+service regularly starts with no index at all. `ensure_memory()` detects an empty
+collection, shallow-clones the target repository, chunks it, embeds it, and
+deletes the clone. On an already-warm process it costs one `count()`.
+
+Chunking uses Python's `ast` module rather than a character-count text splitter,
+so a retrieved block is always a complete function or class instead of one cut in
+half mid-body. Only the top level of each module is walked: descending into
+classes would emit every method twice — once inside its class and once alone —
+which doubles the embedding bill and lets one large class crowd everything else
+out of the top-k.
+
+### 3. The consensus gate
+
+The model does not decide whether code merges. Each reviewer returns a
+constrained `Verdict` object (`APPROVE` or `REQUEST_CHANGES`, plus findings), and
+a plain Python function counts them. Anything short of unanimous blocks the merge,
+and a reviewer whose call failed counts as a rejection rather than an approval —
+treating a timeout as consent is how a gate stops being a gate.
+
+The result is written to two places: a Markdown comment on the PR, and a **commit
+status** on the head SHA. The comment is advisory; the commit status is the actual
+gate, because naming it a required check in branch protection makes GitHub itself
+refuse the merge.
 
 ---
 
-## 🛠️ Tech Stack
+## The five reviewers
 
-* **API & Routing:** FastAPI, Python `BackgroundTasks`
-* **AI Orchestration:** LangGraph
-* **Vector Database:** Qdrant
-* **Embeddings & LLM:** Google Gemini 2.5 Flash, `gemini-embedding-001`
-* **Parsing:** Python `ast` module
+| | Reviewer | Looks for |
+|---|---|---|
+| 🛡️ | Security | Hardcoded credentials, injection, missing authz, secrets in logs |
+| 🚀 | Performance | Complexity regressions, N+1 queries, unbounded growth, blocking I/O |
+| 💅 | Style | Naming, dead code, missing hints, inconsistency with retrieved context |
+| 🧪 | QA / Tests | Missing tests, unhandled edge cases and boundaries |
+| 👔 | Product | Scope creep, unrelated refactoring, speculative abstraction |
+
+Adding a sixth is one entry in `REVIEWERS` — the runner and the gate size
+themselves off that list.
 
 ---
 
-## 💻 Local Setup & Testing
+## Layout
 
-To run this pipeline locally, first build the memory bank, then trigger the webhook.
+| File | Responsibility |
+|---|---|
+| `main.py` | Webhook entrypoint, signature verification, GitHub API calls, background worker |
+| `reviewer.py` | LangGraph graph, the five reviewer specs, the consensus gate |
+| `ingest.py` | AST chunking, repository indexing, self-healing cold boot |
+| `retrieve.py` | Per-file diff retrieval and result merging |
+| `embeddings.py` | Shared embedding client — one model, one dimensionality, both pipelines |
+| `qdrant_store.py` | Sole owner of the Qdrant connection and its concurrency lock |
+| `test_review_swarm.py` | 31 offline tests over the deterministic logic |
 
-### 1. Clone & Install
+`embeddings.py` exists so ingest and retrieval cannot drift onto different models
+or dimensionalities — their vectors would land in different spaces and cosine
+similarity between them would be meaningless.
+
+`qdrant_store.py` exists because Qdrant runs here in embedded mode, which takes an
+exclusive file lock on its directory. Two PRs arriving together execute in the
+same process, so access is serialised behind a lock; without it the second one
+dies. Moving to a Qdrant server is a change to that one file.
+
+---
+
+## Tech stack
+
+- **API** — FastAPI, Starlette `BackgroundTasks`
+- **Orchestration** — LangGraph (fan-out / fan-in over a shared `TypedDict` state)
+- **Vector store** — Qdrant, embedded mode, cosine distance
+- **Models** — `gemini-2.5-flash` for review, `gemini-embedding-001` at 768 dims
+- **Parsing** — Python `ast`
+
+---
+
+## Setup
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/pr-reviewer.git
+git clone https://github.com/Rishi8603/pr-reviewer.git
 cd pr-reviewer
 
-# Create virtual environment
 python -m venv venv
-
-# Windows
-venv\Scripts\activate
-
-# Linux/macOS
-source venv/bin/activate
+venv\Scripts\activate          # Windows
+source venv/bin/activate       # Linux / macOS
 
 pip install -r requirements.txt
+cp .env.example .env           # then fill it in
 ```
 
-### 2. Environment Variables
-
-Create a `.env` file in the root directory:
-
-```env
-GITHUB_TOKEN=your_github_personal_access_token
-GEMINI_API_KEY=your_gemini_api_key
-```
-
-### 3. Build the Memory Bank
-
-Before the AI can review code, it must ingest the codebase.
-
-```bash
-python ingest.py
-```
-
-Expected output:
-
-```bash
-✅ Successfully ingested X code blocks
-```
-
-### 4. Start the Webhook Server
+### Run
 
 ```bash
 uvicorn main:app --reload
 ```
 
-### 5. Simulate a GitHub Webhook
+Then check that memory is populated:
 
-Use Postman or `curl` to send a `POST` request to:
-
-```text
-http://localhost:8000/webhook
+```bash
+curl http://localhost:8000/health
+# {"status":"ok","vectors":42,"memory":"warm","signature_verification":true}
 ```
 
-Headers:
+There is no separate indexing step to remember — the first review builds the index
+if it is empty. To index a directory ahead of time anyway:
 
-```text
-X-GitHub-Event: pull_request
+```bash
+python ingest.py            # index the current directory
+python ingest.py ../other   # index somewhere else
 ```
 
-Body: provide a dummy GitHub PR payload containing a target `clone_url` and `repo_full_name`.
+### Wire up GitHub
 
----
+1. Repo → **Settings → Webhooks → Add webhook**
+   - Payload URL: `https://<your-host>/webhook`
+   - Content type: `application/json`
+   - Secret: the same value as `GITHUB_WEBHOOK_SECRET`
+   - Events: **Pull requests**
+2. To make the verdict actually block a merge, repo → **Settings → Branches →
+   Branch protection rule** → require the status check named **`pr-review-swarm`**.
 
-## 🔁 Production Lifecycle
+Without step 2 the review is a comment. With it, a 4/5 verdict disables the merge
+button.
 
-When deployed to a cloud provider with ephemeral storage, such as Render free tier, the system behaves autonomously:
+### Tests
 
-1. **Amnesia Boot:** The server starts with an empty Qdrant database.
-2. **Webhook Catch:** A PR is opened. FastAPI catches the payload, returns `200 OK`, and sends the job to the background.
-3. **Autonomous Sync:** The background task detects an empty database, clones the `main` branch, ingests AST vectors into Qdrant, and cleans up temporary files.
-4. **Swarm Execution:** The PR diff is semantically searched against the rebuilt memory, and the five LangGraph agents run in parallel.
-5. **Delivery:** The orchestrator calculates consensus and posts the formatted Markdown review directly to the GitHub PR timeline via the REST API.
-
----
-
-## 📌 Highlights
-
-* Event-driven architecture for CI/CD workflows
-* Background task handling for fast webhook acknowledgment
-* AST-based repository ingestion
-* Qdrant-powered project memory
-* Parallel multi-agent code review
-* Deterministic consensus enforcement before merge
-
----
-
-## 📄 Example Flow
-
-```text
-GitHub PR Opened
-→ Webhook Received
-→ Immediate 200 OK Response
-→ Background Ingestion / Memory Sync
-→ Qdrant Retrieval
-→ 5-Agent Parallel Review
-→ Consensus Engine
-→ GitHub PR Comment Posted
+```bash
+python -m unittest discover -v
 ```
 
+31 tests, fully offline — no Gemini call, no Qdrant, no GitHub. They cover the
+logic that decides whether a PR merges, which is the part that should be
+verifiable without a network.
+
 ---
 
-## ✅ Outcome
+## Measurements
 
-This architecture is designed to demonstrate:
+| | |
+|---|---|
+| Five reviewers, wall clock | **0.31 s** vs 1.50 s if run sequentially (0.3 s stub per reviewer) — a 4.8× overlap, asserted by a test |
+| Render free-tier cold start | ~63 s before the first request is served |
+| LLM calls per review | 5 (one per reviewer) — the report is rendered in Python, not by a sixth call |
 
-* distributed systems thinking
-* production webhook handling
-* ephemeral storage recovery
-* vector-based semantic memory
-* concurrent agent orchestration
-* deterministic merge control
+The concurrency figure holds because fanning out from `START` puts all five nodes
+in one LangGraph superstep, LangGraph dispatches sync node callables to a
+threadpool, and the work inside each is a network call that releases the GIL while
+it waits.
 
-If needed, I can also turn this into a more polished **GitHub-style README** with badges, table of contents, and cleaner wording.
+---
+
+## Known limitations
+
+Honest list of what this does not do yet.
+
+- **Single process only.** Embedded Qdrant locks its directory and the delivery
+  de-duplication set lives in process memory, so `--workers 2` breaks both. Both
+  want the same fix: a Qdrant server and Redis.
+- **No durable queue.** `BackgroundTasks` runs in-process, so a restart mid-review
+  loses that review with no retry. A real deployment wants Celery or SQS.
+- **Cold boot is on the critical path.** The first PR after a spin-down waits
+  through a clone and a full index. Warming on startup instead would hide it.
+- **Python only.** `ast` is Python-specific; other languages need tree-sitter.
+- **Unanimity is strict.** Five independent reviewers each with a small
+  false-positive rate rarely all approve, so in practice most PRs get a
+  `REQUEST_CHANGES`. Weighting reviewers, or making only Security blocking, would
+  trade strictness for a bot people keep listening to.
+- **Whole-repo index, not incremental.** A cold boot re-indexes everything rather
+  than only what changed since the last commit it saw.
+- **Review comments are not line-anchored.** The report is one comment; GitHub's
+  review API could attach findings to specific lines.

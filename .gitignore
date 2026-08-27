@@ -1,3 +1,14 @@
+# Secrets
 .env
+
+# Local vector store (rebuilt on demand by ensure_memory)
 qdrant_data/
+
+# Personal notes
 notes.txt
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
