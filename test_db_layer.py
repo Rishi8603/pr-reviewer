@@ -5,8 +5,8 @@ These tests use SQLite in-memory as a stand-in for PostgreSQL so they run
 offline with no database server. The SQL dialect differences (no PERCENTILE_CONT,
 no DATE_TRUNC in SQLite) mean the analytics endpoint SQL is not tested here —
 those are integration tests that need a real PostgreSQL. What IS tested here is
-the transactional persistence logic, severity classification, file path
-extraction, and rate limiting logic.
+the transactional persistence logic, severity classification, and file path
+extraction logic.
 """
 
 import unittest
@@ -352,49 +352,6 @@ class TestGetOrCreateRepo(unittest.TestCase):
             repo2 = _get_or_create_repo(db, "existing/repo", "https://github.com/existing/repo.git")
             db.commit()
             self.assertEqual(repo1.id, repo2.id)
-
-
-# =====================================================================
-# RATE LIMITER LOGIC
-# =====================================================================
-class TestRateLimiter(unittest.TestCase):
-    """Rate limiter with a patched DB session."""
-
-    def setUp(self):
-        self.TestSession, self.engine = _make_test_session()
-
-    def tearDown(self):
-        Base.metadata.drop_all(self.engine)
-
-    def test_no_db_allows_unlimited(self):
-        """When DATABASE_URL is not set, rate limiting is disabled."""
-        from rate_limiter import check_rate_limit
-
-        with patch("rate_limiter.get_db", return_value=None):
-            # Should not raise
-            check_rate_limit("any/repo")
-
-    def test_under_limit_passes(self):
-        from rate_limiter import check_rate_limit
-
-        # Add 2 PRs (under the default limit of 10)
-        with self.TestSession() as db:
-            repo = Repository(full_name="test/repo", clone_url="https://github.com/test/repo.git")
-            db.add(repo)
-            db.flush()
-            for i in range(2):
-                pr = PullRequest(
-                    repository_id=repo.id,
-                    pr_number=i + 1,
-                    head_sha=f"sha{i:040d}",
-                    status=ReviewStatus.COMPLETED,
-                )
-                db.add(pr)
-            db.commit()
-
-        with patch("rate_limiter.get_db", return_value=self.TestSession()):
-            # Should not raise
-            check_rate_limit("test/repo")
 
 
 if __name__ == "__main__":

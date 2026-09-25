@@ -110,44 +110,19 @@ def persist_review(
             repo = _get_or_create_repo(db, repo_full_name, clone_url)
             repo.last_reviewed_at = datetime.now(timezone.utc)
 
-            # 2. Pull request — if a prior attempt failed, update in place
-            #    instead of inserting a duplicate (the unique constraint on
-            #    (repository_id, pr_number, head_sha) would reject it).
-            pr = (
-                db.query(PullRequest)
-                .filter_by(
-                    repository_id=repo.id,
-                    pr_number=pr_number,
-                    head_sha=head_sha,
-                )
-                .first()
+            # 2. Pull request
+            pr = PullRequest(
+                repository_id=repo.id,
+                pr_number=pr_number,
+                head_sha=head_sha,
+                author=author,
+                title=title,
+                status=ReviewStatus.COMPLETED,
+                completed_at=datetime.now(timezone.utc),
+                review_duration_ms=duration_ms,
             )
-            if pr is not None:
-                # A prior attempt exists (likely FAILED). Upgrade it.
-                pr.status = ReviewStatus.COMPLETED
-                pr.completed_at = datetime.now(timezone.utc)
-                pr.review_duration_ms = duration_ms
-                pr.author = author or pr.author
-                pr.title = title or pr.title
-                # Remove stale reviews/findings/consensus from the failed attempt.
-                if pr.consensus:
-                    db.delete(pr.consensus)
-                for old_review in pr.reviews:
-                    db.delete(old_review)
-                db.flush()
-            else:
-                pr = PullRequest(
-                    repository_id=repo.id,
-                    pr_number=pr_number,
-                    head_sha=head_sha,
-                    author=author,
-                    title=title,
-                    status=ReviewStatus.COMPLETED,
-                    completed_at=datetime.now(timezone.utc),
-                    review_duration_ms=duration_ms,
-                )
-                db.add(pr)
-                db.flush()  # Assigns pr.id
+            db.add(pr)
+            db.flush()  # Assigns pr.id so reviews can reference it
 
             # 3. Individual reviewer verdicts + findings
             from reviewer import REVIEWERS

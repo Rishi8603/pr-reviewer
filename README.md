@@ -112,8 +112,7 @@ themselves off that list.
 | `database.py` | SQLAlchemy engine, session factory, connection pooling |
 | `models.py` | Five normalised tables: repositories, pull_requests, reviews, findings, review_consensus |
 | `db_writer.py` | Transactional persistence of completed reviews to PostgreSQL |
-| `analytics.py` | FastAPI router with six SQL-powered analytics endpoints |
-| `rate_limiter.py` | Per-repository sliding-window rate limiter backed by PostgreSQL |
+| `analytics.py` | FastAPI router with four SQL-powered analytics endpoints |
 | `test_review_swarm.py` | 31 offline tests over the deterministic logic |
 
 `embeddings.py` exists so ingest and retrieval cannot drift onto different models
@@ -226,21 +225,10 @@ following endpoints become available:
 
 | Endpoint | Returns |
 |---|---|
-| `GET /analytics/overview?days=30` | Per-repo approval rates, avg/p95 review latency |
-| `GET /analytics/reviewer-agreement?days=30` | Pairwise agreement rates between reviewers (CTE + self-join) |
-| `GET /analytics/hotspots?days=30&limit=20` | Files with the most findings, ranked by DENSE_RANK |
-| `GET /analytics/trends?weeks=12` | Weekly review volume and outcome time-series |
-| `GET /analytics/reviewer/{type}/findings?days=30` | A reviewer's recent findings with window functions |
-| `GET /analytics/summary` | Quick dashboard counts |
-
-The queries use CTEs, window functions (`ROW_NUMBER`, `DENSE_RANK`,
-`PERCENTILE_CONT`), `DATE_TRUNC`, and conditional aggregation.
-
-### Rate limiting
-
-When `DATABASE_URL` is set, a per-repository sliding-window rate limiter
-prevents webhook flooding. Default: 10 reviews per hour per repository.
-Configurable via `RATE_LIMIT_MAX_REVIEWS` and `RATE_LIMIT_WINDOW_SECONDS`.
+| `GET /analytics/overview?days=30` | Per-repo approval rates and avg review latency |
+| `GET /analytics/hotspots?days=30&limit=20` | Files with the most findings, with severity counts |
+| `GET /analytics/trends?weeks=12` | Weekly review volume and outcome trends |
+| `GET /analytics/summary` | Quick dashboard counts (total PRs, findings, critical) |
 
 ---
 

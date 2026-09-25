@@ -9,7 +9,6 @@ review to a BackgroundTask, which Starlette runs only after the 200 has already
 been written to the socket.
 """
 
-import asyncio
 import hashlib
 import hmac
 import json
@@ -22,14 +21,12 @@ from collections import OrderedDict
 import requests
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
 
 from analytics import router as analytics_router
 from database import check_connection as check_db_connection
 from db_writer import persist_failed_review, persist_review
 from ingest import ensure_memory
 from qdrant_store import MemoryBusy, count_vectors
-from rate_limiter import RateLimitExceeded, check_rate_limit
 from retrieve import search_codebase
 from reviewer import initial_state, pr_reviewer_graph
 
@@ -354,23 +351,6 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks) ->
 
     if pull_request.get("draft"):
         return {"status": "ignored", "reason": "draft PR"}
-
-    # Per-repository rate limiting (DB-backed sliding window).
-    # Run in a thread to avoid blocking the async event loop — the DB query
-    # can take tens of ms on a cold connection.
-    try:
-        await asyncio.to_thread(check_rate_limit, repo_full_name)
-    except RateLimitExceeded as exc:
-        print(f"Rate limited: {exc}")
-        return JSONResponse(
-            status_code=429,
-            content={
-                "status": "rate_limited",
-                "detail": str(exc),
-                "retry_after": exc.retry_after,
-            },
-            headers={"Retry-After": str(exc.retry_after)},
-        )
 
     claim_key = (repo_full_name, head_sha)
     if not claim_delivery(claim_key):
