@@ -9,20 +9,27 @@ review to a BackgroundTask, which Starlette runs only after the 200 has already
 been written to the socket.
 """
 
+import asyncio
 import hashlib
 import hmac
 import json
 import os
 import threading
+import time
 import traceback
 from collections import OrderedDict
 
 import requests
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 
+from analytics import router as analytics_router
+from database import check_connection as check_db_connection
+from db_writer import persist_failed_review, persist_review
 from ingest import ensure_memory
 from qdrant_store import MemoryBusy, count_vectors
+from rate_limiter import RateLimitExceeded, check_rate_limit
 from retrieve import search_codebase
 from reviewer import initial_state, pr_reviewer_graph
 
@@ -42,6 +49,7 @@ STATUS_CONTEXT = "pr-review-swarm"
 REVIEW_ACTIONS = {"opened", "synchronize", "reopened"}
 
 app = FastAPI(title="Autonomous CI/CD PR Review Swarm")
+app.include_router(analytics_router)
 
 
 # =====================================================================
@@ -184,9 +192,17 @@ def post_commit_status(
 # =====================================================================
 # THE BACKGROUND WORKER
 # =====================================================================
-def process_pr(repo_full_name: str, pr_number: int, head_sha: str, clone_url: str) -> None:
+def process_pr(
+    repo_full_name: str,
+    pr_number: int,
+    head_sha: str,
+    clone_url: str,
+    author: str | None = None,
+    title: str | None = None,
+) -> None:
     print(f"\n[BACKGROUND] Reviewing {repo_full_name}#{pr_number} @ {head_sha[:7]}")
     claim_key = (repo_full_name, head_sha)
+    start_time = time.monotonic()
 
     try:
         post_commit_status(
@@ -224,15 +240,31 @@ def process_pr(repo_full_name: str, pr_number: int, head_sha: str, clone_url: st
             + ("" if passed else " - unanimous approval required"),
             target_url=comment_url,
         )
+
+        duration_ms = int((time.monotonic() - start_time) * 1000)
         print(
             f"[DONE] {repo_full_name}#{pr_number}: {approvals}/{total} "
-            f"({blocks} blocks in memory)"
+            f"({blocks} blocks in memory, {duration_ms}ms)"
+        )
+
+        # Persist the full review to PostgreSQL for analytics.
+        persist_review(
+            repo_full_name=repo_full_name,
+            clone_url=clone_url,
+            pr_number=pr_number,
+            head_sha=head_sha,
+            result=result,
+            duration_ms=duration_ms,
+            comment_url=comment_url,
+            author=author,
+            title=title,
         )
 
     except Exception as exc:
         # This runs after the response was sent, so an exception here has nowhere
         # to surface. Reporting it as an errored commit status is what makes a
         # broken review visible in the PR instead of vanishing into the logs.
+        duration_ms = int((time.monotonic() - start_time) * 1000)
         print(f"[FAILED] {repo_full_name}#{pr_number}: {type(exc).__name__}: {exc}")
         traceback.print_exc()
         post_commit_status(
@@ -240,6 +272,16 @@ def process_pr(repo_full_name: str, pr_number: int, head_sha: str, clone_url: st
             head_sha,
             "error",
             f"Review failed: {type(exc).__name__}",
+        )
+        persist_failed_review(
+            repo_full_name=repo_full_name,
+            clone_url=clone_url,
+            pr_number=pr_number,
+            head_sha=head_sha,
+            error=f"{type(exc).__name__}: {exc}",
+            duration_ms=duration_ms,
+            author=author,
+            title=title,
         )
         release_delivery(claim_key)
 
@@ -274,6 +316,7 @@ def health() -> dict:
         "vectors": vectors,
         "memory": memory,
         "signature_verification": bool(WEBHOOK_SECRET),
+        "database": "connected" if check_db_connection() else "not configured",
     }
 
 
@@ -312,6 +355,23 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks) ->
     if pull_request.get("draft"):
         return {"status": "ignored", "reason": "draft PR"}
 
+    # Per-repository rate limiting (DB-backed sliding window).
+    # Run in a thread to avoid blocking the async event loop — the DB query
+    # can take tens of ms on a cold connection.
+    try:
+        await asyncio.to_thread(check_rate_limit, repo_full_name)
+    except RateLimitExceeded as exc:
+        print(f"Rate limited: {exc}")
+        return JSONResponse(
+            status_code=429,
+            content={
+                "status": "rate_limited",
+                "detail": str(exc),
+                "retry_after": exc.retry_after,
+            },
+            headers={"Retry-After": str(exc.retry_after)},
+        )
+
     claim_key = (repo_full_name, head_sha)
     if not claim_delivery(claim_key):
         # A duplicate delivery, or a second push event for a commit already in
@@ -319,8 +379,15 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks) ->
         print(f"Already reviewing {repo_full_name}@{head_sha[:7]} - skipping duplicate.")
         return {"status": "duplicate", "sha": head_sha}
 
+    # Extract PR metadata for analytics persistence.
+    author = pull_request.get("user", {}).get("login")
+    pr_title = pull_request.get("title")
+
     print(f"Queued {repo_full_name}#{pr_number} @ {head_sha[:7]}")
-    background_tasks.add_task(process_pr, repo_full_name, pr_number, head_sha, clone_url)
+    background_tasks.add_task(
+        process_pr, repo_full_name, pr_number, head_sha, clone_url,
+        author=author, title=pr_title,
+    )
 
     return {
         "status": "queued",

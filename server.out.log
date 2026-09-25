@@ -1,0 +1,4 @@
+INFO:     127.0.0.1:53052 - "GET /health HTTP/1.1" 200 OK
+WARNING: GITHUB_WEBHOOK_SECRET is unset - signature verification disabled.
+INFO:     127.0.0.1:59943 - "POST /webhook HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59944 - "GET / HTTP/1.1" 200 OK

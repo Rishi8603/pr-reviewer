@@ -109,6 +109,11 @@ themselves off that list.
 | `retrieve.py` | Per-file diff retrieval and result merging |
 | `embeddings.py` | Shared embedding client — one model, one dimensionality, both pipelines |
 | `qdrant_store.py` | Sole owner of the Qdrant connection and its concurrency lock |
+| `database.py` | SQLAlchemy engine, session factory, connection pooling |
+| `models.py` | Five normalised tables: repositories, pull_requests, reviews, findings, review_consensus |
+| `db_writer.py` | Transactional persistence of completed reviews to PostgreSQL |
+| `analytics.py` | FastAPI router with six SQL-powered analytics endpoints |
+| `rate_limiter.py` | Per-repository sliding-window rate limiter backed by PostgreSQL |
 | `test_review_swarm.py` | 31 offline tests over the deterministic logic |
 
 `embeddings.py` exists so ingest and retrieval cannot drift onto different models
@@ -127,6 +132,8 @@ dies. Moving to a Qdrant server is a change to that one file.
 - **API** — FastAPI, Starlette `BackgroundTasks`
 - **Orchestration** — LangGraph (fan-out / fan-in over a shared `TypedDict` state)
 - **Vector store** — Qdrant, embedded mode, cosine distance
+- **Relational store** — PostgreSQL via SQLAlchemy (review audit trail + analytics)
+- **Migrations** — Alembic
 - **Models** — `gemini-2.5-flash` for review, `gemini-embedding-001` at 768 dims
 - **Parsing** — Python `ast`
 
@@ -146,6 +153,26 @@ pip install -r requirements.txt
 cp .env.example .env           # then fill it in
 ```
 
+### Database (optional)
+
+PostgreSQL is optional — the service works without it, but analytics endpoints
+return 503 and reviews are not persisted.
+
+```bash
+# Start PostgreSQL (Docker or local install)
+docker run -d --name pr-reviewer-db -p 5432:5432 \
+  -e POSTGRES_DB=pr_reviewer \
+  -e POSTGRES_USER=user \
+  -e POSTGRES_PASSWORD=password \
+  postgres:16
+
+# Set DATABASE_URL in .env
+# DATABASE_URL=postgresql://user:password@localhost:5432/pr_reviewer
+
+# Run migrations
+alembic upgrade head
+```
+
 ### Run
 
 ```bash
@@ -156,7 +183,7 @@ Then check that memory is populated:
 
 ```bash
 curl http://localhost:8000/health
-# {"status":"ok","vectors":42,"memory":"warm","signature_verification":true}
+# {"status":"ok","vectors":42,"memory":"warm","signature_verification":true,"database":"connected"}
 ```
 
 There is no separate indexing step to remember — the first review builds the index
@@ -189,6 +216,31 @@ python -m unittest discover -v
 31 tests, fully offline — no Gemini call, no Qdrant, no GitHub. They cover the
 logic that decides whether a PR merges, which is the part that should be
 verifiable without a network.
+
+---
+
+## Analytics endpoints
+
+When `DATABASE_URL` is set, every review is persisted to PostgreSQL and the
+following endpoints become available:
+
+| Endpoint | Returns |
+|---|---|
+| `GET /analytics/overview?days=30` | Per-repo approval rates, avg/p95 review latency |
+| `GET /analytics/reviewer-agreement?days=30` | Pairwise agreement rates between reviewers (CTE + self-join) |
+| `GET /analytics/hotspots?days=30&limit=20` | Files with the most findings, ranked by DENSE_RANK |
+| `GET /analytics/trends?weeks=12` | Weekly review volume and outcome time-series |
+| `GET /analytics/reviewer/{type}/findings?days=30` | A reviewer's recent findings with window functions |
+| `GET /analytics/summary` | Quick dashboard counts |
+
+The queries use CTEs, window functions (`ROW_NUMBER`, `DENSE_RANK`,
+`PERCENTILE_CONT`), `DATE_TRUNC`, and conditional aggregation.
+
+### Rate limiting
+
+When `DATABASE_URL` is set, a per-repository sliding-window rate limiter
+prevents webhook flooding. Default: 10 reviews per hour per repository.
+Configurable via `RATE_LIMIT_MAX_REVIEWS` and `RATE_LIMIT_WINDOW_SECONDS`.
 
 ---
 
