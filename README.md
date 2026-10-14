@@ -58,8 +58,9 @@ at-least-once and `synchronize` fires on every push to the branch.
 ### 2. Self-healing vector memory
 
 Render wipes the disk on every deploy and every wake from spin-down, so the
-service regularly starts with no index at all. `ensure_memory()` detects an empty
-collection, shallow-clones the target repository, chunks it, embeds it, and
+service regularly starts with no index at all. Each repository gets its own Qdrant
+collection, so one repo's PRs never retrieve another's code. `ensure_memory()` detects
+an empty collection for the PR's repo, shallow-clones the target repository, chunks it, embeds it, and
 deletes the clone. On an already-warm process it costs one `count()`.
 
 Chunking uses Python's `ast` module rather than a character-count text splitter,
@@ -189,8 +190,8 @@ There is no separate indexing step to remember — the first review builds the i
 if it is empty. To index a directory ahead of time anyway:
 
 ```bash
-python ingest.py            # index the current directory
-python ingest.py ../other   # index somewhere else
+python ingest.py . owner/repo         # index the current directory as owner/repo
+python ingest.py ../other owner/other # index somewhere else
 ```
 
 ### Wire up GitHub

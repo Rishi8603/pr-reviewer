@@ -326,6 +326,46 @@ class TestPersistFailedReview(unittest.TestCase):
             self.assertEqual(db.query(Finding).count(), 0)
 
 
+    def test_retry_after_failure_reuses_the_row(self):
+        args = dict(
+            repo_full_name="test/repo",
+            clone_url="https://github.com/test/repo.git",
+            pr_number=5,
+            head_sha="retry12345678",
+        )
+        with patch("db_writer.get_db", return_value=self.TestSession()):
+            persist_failed_review(error="TimeoutError", duration_ms=90000, **args)
+        with patch("db_writer.get_db", return_value=self.TestSession()):
+            success = persist_review(result=_make_graph_result(), duration_ms=4000, **args)
+
+        self.assertTrue(success)
+        with self.TestSession() as db:
+            prs = db.query(PullRequest).all()
+            self.assertEqual(len(prs), 1)
+            self.assertEqual(prs[0].status, ReviewStatus.COMPLETED)
+            self.assertEqual(db.query(Review).count(), 5)
+            self.assertEqual(db.query(ReviewConsensus).count(), 1)
+
+    def test_redelivered_success_does_not_duplicate_reviews(self):
+        args = dict(
+            repo_full_name="test/repo",
+            clone_url="https://github.com/test/repo.git",
+            pr_number=6,
+            head_sha="again12345678",
+            result=_make_graph_result(security="REQUEST_CHANGES"),
+            duration_ms=4000,
+        )
+        for _ in range(2):
+            with patch("db_writer.get_db", return_value=self.TestSession()):
+                self.assertTrue(persist_review(**args))
+
+        with self.TestSession() as db:
+            self.assertEqual(db.query(PullRequest).count(), 1)
+            self.assertEqual(db.query(Review).count(), 5)
+            self.assertEqual(db.query(Finding).count(), 1)
+            self.assertEqual(db.query(ReviewConsensus).count(), 1)
+
+
 # =====================================================================
 # GET OR CREATE REPO
 # =====================================================================

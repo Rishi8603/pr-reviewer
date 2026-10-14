@@ -309,6 +309,17 @@ class TestCloneUrlValidation(unittest.TestCase):
         self.assertIn("github.com/o/r.git", redacted)
 
 
+class TestPerRepoCollections(unittest.TestCase):
+    def test_each_repo_gets_its_own_collection(self):
+        from qdrant_store import collection_for
+        self.assertNotEqual(collection_for("octo/api"), collection_for("octo/web"))
+
+    def test_name_is_case_insensitive_and_qdrant_safe(self):
+        from qdrant_store import collection_for
+        self.assertEqual(collection_for("Octo/My.Repo"), collection_for("octo/my.repo"))
+        self.assertRegex(collection_for("Octo/My.Repo"), r"^[a-z0-9_-]+$")
+
+
 class TestGraphConcurrency(unittest.TestCase):
     """Proof that the five reviewers actually overlap.
 

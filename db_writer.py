@@ -81,6 +81,28 @@ def _get_or_create_repo(db, repo_full_name: str, clone_url: str) -> Repository:
     return repo
 
 
+def _get_or_reset_pr(db, repo: Repository, pr_number: int, head_sha: str) -> PullRequest:
+    """Return the row for this commit, clearing any earlier attempt's results.
+
+    (repository, pr_number, head_sha) is unique, and a failed review is
+    released so the same commit can be retried. Always inserting a new row made
+    that retry hit the constraint, and the successful review was never saved.
+    """
+    pr = (
+        db.query(PullRequest)
+        .filter_by(repository_id=repo.id, pr_number=pr_number, head_sha=head_sha)
+        .first()
+    )
+    if pr is None:
+        pr = PullRequest(repository_id=repo.id, pr_number=pr_number, head_sha=head_sha)
+        db.add(pr)
+    else:
+        pr.reviews.clear()
+        pr.consensus = None
+    db.flush()  # Assigns pr.id and deletes the old children before new ones arrive.
+    return pr
+
+
 def persist_review(
     repo_full_name: str,
     clone_url: str,
@@ -110,19 +132,13 @@ def persist_review(
             repo = _get_or_create_repo(db, repo_full_name, clone_url)
             repo.last_reviewed_at = datetime.now(timezone.utc)
 
-            # 2. Pull request
-            pr = PullRequest(
-                repository_id=repo.id,
-                pr_number=pr_number,
-                head_sha=head_sha,
-                author=author,
-                title=title,
-                status=ReviewStatus.COMPLETED,
-                completed_at=datetime.now(timezone.utc),
-                review_duration_ms=duration_ms,
-            )
-            db.add(pr)
-            db.flush()  # Assigns pr.id so reviews can reference it
+            # 2. Pull request (reused if an earlier attempt on this commit failed)
+            pr = _get_or_reset_pr(db, repo, pr_number, head_sha)
+            pr.author = author
+            pr.title = title
+            pr.status = ReviewStatus.COMPLETED
+            pr.completed_at = datetime.now(timezone.utc)
+            pr.review_duration_ms = duration_ms
 
             # 3. Individual reviewer verdicts + findings
             from reviewer import REVIEWERS
@@ -189,17 +205,12 @@ def persist_failed_review(
         with db:
             repo = _get_or_create_repo(db, repo_full_name, clone_url)
 
-            pr = PullRequest(
-                repository_id=repo.id,
-                pr_number=pr_number,
-                head_sha=head_sha,
-                author=author,
-                title=title,
-                status=ReviewStatus.FAILED,
-                completed_at=datetime.now(timezone.utc),
-                review_duration_ms=duration_ms,
-            )
-            db.add(pr)
+            pr = _get_or_reset_pr(db, repo, pr_number, head_sha)
+            pr.author = author
+            pr.title = title
+            pr.status = ReviewStatus.FAILED
+            pr.completed_at = datetime.now(timezone.utc)
+            pr.review_duration_ms = duration_ms
             db.commit()
             print(f"[DB] Persisted failed review for {repo_full_name}#{pr_number}")
             return True

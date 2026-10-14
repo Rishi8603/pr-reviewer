@@ -26,7 +26,7 @@ from analytics import router as analytics_router
 from database import check_connection as check_db_connection
 from db_writer import persist_failed_review, persist_review
 from ingest import ensure_memory
-from qdrant_store import MemoryBusy, count_vectors
+from qdrant_store import MemoryBusy, collection_for, count_vectors
 from retrieve import search_codebase
 from reviewer import initial_state, pr_reviewer_graph
 
@@ -208,7 +208,7 @@ def process_pr(
 
         # Self-heal first. On a cold process this clones and indexes the repo; on
         # a warm one it is a single count() and returns immediately.
-        blocks = ensure_memory(clone_url, token=GITHUB_TOKEN)
+        blocks = ensure_memory(repo_full_name, clone_url, token=GITHUB_TOKEN)
 
         diff_text = get_pr_diff(repo_full_name, pr_number)
         if not diff_text.strip():
@@ -218,7 +218,7 @@ def process_pr(
             )
             return
 
-        context = search_codebase(diff_text)
+        context = search_codebase(diff_text, collection_for(repo_full_name))
 
         print("Running the 5-reviewer swarm...")
         result = pr_reviewer_graph.invoke(initial_state(diff_text, context))

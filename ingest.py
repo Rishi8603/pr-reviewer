@@ -3,8 +3,8 @@ The offline pipeline: source code in, vectors out.
 
 Two entry points:
 
-  ingest_repository(path)          index a directory that is already on disk
-  ensure_memory(clone_url, token)  index the target repo if memory is empty
+  ingest_repository(path, collection)    index a directory that is already on disk
+  ensure_memory(repo, clone_url, token)  index the target repo if its memory is empty
 
 `ensure_memory` is the self-healing step. Render's filesystem is ephemeral, so
 every deploy and every wake from spin-down comes up with ./qdrant_data gone.
@@ -26,7 +26,7 @@ from urllib.parse import urlparse
 from qdrant_client.models import PointStruct
 
 from embeddings import embed_texts
-from qdrant_store import COLLECTION_NAME, count_vectors, open_qdrant, vectors_config
+from qdrant_store import collection_for, count_vectors, open_qdrant, vectors_config
 
 # Directories that contain code we did not write. Indexing site-packages would
 # bury the project's own functions under thousands of dependency vectors.
@@ -141,7 +141,7 @@ def iter_python_files(repo_path: str):
 # =====================================================================
 # PHASE 2: THE INGESTION ENGINE
 # =====================================================================
-def ingest_repository(repo_path: str, recreate: bool = True) -> int:
+def ingest_repository(repo_path: str, collection: str, recreate: bool = True) -> int:
     """Chunk every Python file under repo_path into Qdrant. Returns block count."""
     print(f"Scanning repository: {repo_path}")
 
@@ -166,15 +166,15 @@ def ingest_repository(repo_path: str, recreate: bool = True) -> int:
     ]
 
     with open_qdrant() as qdrant:
-        if recreate and qdrant.collection_exists(collection_name=COLLECTION_NAME):
-            print(f"Replacing existing collection: {COLLECTION_NAME}")
-            qdrant.delete_collection(collection_name=COLLECTION_NAME)
-        if not qdrant.collection_exists(collection_name=COLLECTION_NAME):
+        if recreate and qdrant.collection_exists(collection_name=collection):
+            print(f"Replacing existing collection: {collection}")
+            qdrant.delete_collection(collection_name=collection)
+        if not qdrant.collection_exists(collection_name=collection):
             qdrant.create_collection(
-                collection_name=COLLECTION_NAME,
+                collection_name=collection,
                 vectors_config=vectors_config(),
             )
-        qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
+        qdrant.upsert(collection_name=collection, points=points)
 
     print(f"Successfully ingested {len(points)} code blocks.")
     return len(points)
@@ -238,13 +238,14 @@ def clone_repository(clone_url: str, dest: str, token: str | None = None) -> str
     return dest
 
 
-def ensure_memory(clone_url: str, token: str | None = None) -> int:
-    """Rebuild vector memory from source if it is empty. Returns block count.
+def ensure_memory(repo_full_name: str, clone_url: str, token: str | None = None) -> int:
+    """Rebuild this repo's vector memory from source if it is empty. Returns block count.
 
     Idempotent and cheap on a warm process: it is one count() when memory is
     already populated, so it is safe to call at the top of every review.
     """
-    existing = count_vectors()
+    collection = collection_for(repo_full_name)
+    existing = count_vectors(collection)
     if existing > 0:
         print(f"Memory warm: {existing} blocks already indexed.")
         return existing
@@ -255,7 +256,7 @@ def ensure_memory(clone_url: str, token: str | None = None) -> int:
     repo_dir = os.path.join(temp_root, "repo")
     try:
         clone_repository(clone_url, repo_dir, token=token)
-        return ingest_repository(repo_dir)
+        return ingest_repository(repo_dir, collection)
     finally:
         # The free tier's disk is small and this process is long-lived, so a
         # clone left behind on a failed review would accumulate until the disk
@@ -267,5 +268,7 @@ def ensure_memory(clone_url: str, token: str | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # Usage: python ingest.py <path> <owner/repo>
     target = sys.argv[1] if len(sys.argv) > 1 else "."
-    ingest_repository(target)
+    repo_name = sys.argv[2] if len(sys.argv) > 2 else os.path.basename(os.path.abspath(target))
+    ingest_repository(target, collection_for(repo_name))

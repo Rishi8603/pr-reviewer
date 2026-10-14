@@ -12,3 +12,7 @@ __pycache__/
 *.py[cod]
 venv/
 .venv/
+
+# Local logs and editor tooling
+*.log
+.kilo/

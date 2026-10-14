@@ -17,7 +17,7 @@ are merged by best score across all of them.
 import re
 
 from embeddings import embed_texts
-from qdrant_store import COLLECTION_NAME, open_qdrant
+from qdrant_store import open_qdrant
 
 # Per-file query cap. A 60-file refactor would otherwise cost 60 embeddings and
 # return more context than fits in a prompt.
@@ -43,7 +43,7 @@ def split_diff_by_file(diff_text: str) -> list[str]:
     return chunks or [diff_text.strip()]
 
 
-def search_codebase(query_text: str, top_k: int = TOP_K_PER_CHUNK) -> str:
+def search_codebase(query_text: str, collection: str, top_k: int = TOP_K_PER_CHUNK) -> str:
     """Return the codebase blocks most similar to the changed files in a diff."""
     chunks = split_diff_by_file(query_text)
     if not chunks:
@@ -61,7 +61,7 @@ def search_codebase(query_text: str, top_k: int = TOP_K_PER_CHUNK) -> str:
     # files often share a neighbour, and the agents should see it once.
     best_by_id: dict[int, tuple[float, dict]] = {}
     with open_qdrant() as qdrant:
-        if not qdrant.collection_exists(collection_name=COLLECTION_NAME):
+        if not qdrant.collection_exists(collection_name=collection):
             # ensure_memory() should have run first. Returning empty rather than
             # raising keeps a memory failure from taking the whole review down --
             # the agents can still review the diff on its own.
@@ -70,7 +70,7 @@ def search_codebase(query_text: str, top_k: int = TOP_K_PER_CHUNK) -> str:
 
         for vector in query_vectors:
             hits = qdrant.query_points(
-                collection_name=COLLECTION_NAME,
+                collection_name=collection,
                 query=vector,
                 limit=top_k,
             ).points
