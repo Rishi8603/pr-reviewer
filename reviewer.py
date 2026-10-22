@@ -23,10 +23,13 @@ from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_random_exponential
 
 load_dotenv()
 
-LLM_MODEL = os.getenv("REVIEW_MODEL", "gemini-2.5-flash")
+# Flash-Lite, because the free tier allows gemini-2.5-flash only 20 requests a
+# day -- four reviews -- while Flash-Lite caught every planted bug in the demo PRs.
+LLM_MODEL = os.getenv("REVIEW_MODEL", "gemini-flash-lite-latest")
 
 # Low but not zero. Zero makes the model brittle on prompts it finds ambiguous;
 # this is high enough to stay fluent and low enough that two runs of the same
@@ -157,6 +160,29 @@ reviewer covers those. If you find nothing in your area, return APPROVE.
 """.strip()
 
 
+def _is_rate_limited(exc: BaseException) -> bool:
+    """A per-minute 429 is worth waiting out; a spent daily quota is not."""
+    text = str(exc)
+    if "PerDay" in text:
+        return False
+    return "RESOURCE_EXHAUSTED" in text or "429" in text
+
+
+# The Gemini free tier allows 5 requests per minute, and one review is exactly 5
+# calls. A second PR inside the same minute used to get 429s, which the
+# fail-closed runner turned into "Review incomplete" rejections. Waiting out the
+# quota window instead costs latency nobody is watching (this runs in the
+# background); the random jitter stops the five reviewers retrying in lockstep.
+@retry(
+    retry=retry_if_exception(_is_rate_limited),
+    wait=wait_random_exponential(multiplier=15, max=60),
+    stop=stop_after_attempt(6),
+    reraise=True,
+)
+def _invoke_verdict(prompt: str) -> Verdict | None:
+    return structured_llm.invoke(prompt)
+
+
 def _run_reviewer(spec: dict, state: AgentState) -> Verdict:
     # Log lines stay ASCII. The emoji belong in the Markdown report, which goes
     # to GitHub as UTF-8 over HTTP; stdout on Windows is cp1252 by default and
@@ -168,7 +194,7 @@ def _run_reviewer(spec: dict, state: AgentState) -> Verdict:
         context=state.get("codebase_context") or "(no context retrieved)",
     )
     try:
-        verdict = structured_llm.invoke(prompt)
+        verdict = _invoke_verdict(prompt)
         if verdict is None:
             raise ValueError("model returned no parseable verdict")
         return verdict

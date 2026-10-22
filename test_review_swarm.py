@@ -320,6 +320,48 @@ class TestPerRepoCollections(unittest.TestCase):
         self.assertRegex(collection_for("Octo/My.Repo"), r"^[a-z0-9_-]+$")
 
 
+class TestRateLimitRetry(unittest.TestCase):
+    """A 429 is waited out and retried; any other error still fails closed."""
+
+    def _run_with(self, llm):
+        import reviewer as reviewer_module
+        from tenacity import wait_none
+
+        original_llm, original_invoke = reviewer_module.structured_llm, reviewer_module._invoke_verdict
+        reviewer_module.structured_llm = llm
+        reviewer_module._invoke_verdict = original_invoke.retry_with(wait=wait_none())
+        try:
+            return reviewer_module._run_reviewer(REVIEWERS[0], make_state())
+        finally:
+            reviewer_module.structured_llm, reviewer_module._invoke_verdict = original_llm, original_invoke
+
+    def test_rate_limit_is_retried_until_it_succeeds(self):
+        calls = []
+
+        class FlakyLLM:
+            def invoke(self, _prompt):
+                calls.append(1)
+                if len(calls) < 3:
+                    raise RuntimeError("429 RESOURCE_EXHAUSTED: quota exceeded")
+                return approve()
+
+        verdict = self._run_with(FlakyLLM())
+        self.assertEqual(verdict.verdict, "APPROVE")
+        self.assertEqual(len(calls), 3)
+
+    def test_other_errors_are_not_retried_and_fail_closed(self):
+        calls = []
+
+        class BrokenLLM:
+            def invoke(self, _prompt):
+                calls.append(1)
+                raise ValueError("bad request")
+
+        verdict = self._run_with(BrokenLLM())
+        self.assertEqual(verdict.verdict, "REQUEST_CHANGES")
+        self.assertEqual(len(calls), 1)
+
+
 class TestGraphConcurrency(unittest.TestCase):
     """Proof that the five reviewers actually overlap.
 

@@ -134,7 +134,7 @@ dies. Moving to a Qdrant server is a change to that one file.
 - **Vector store** — Qdrant, embedded mode, cosine distance
 - **Relational store** — PostgreSQL via SQLAlchemy (review audit trail + analytics)
 - **Migrations** — Alembic
-- **Models** — `gemini-2.5-flash` for review, `gemini-embedding-001` at 768 dims
+- **Models** — `gemini-flash-lite-latest` for review (override with `REVIEW_MODEL`), `gemini-embedding-001` at 768 dims
 - **Parsing** — Python `ast`
 
 ---
