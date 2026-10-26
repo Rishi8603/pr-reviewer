@@ -20,6 +20,7 @@ import os
 from typing import Literal, TypedDict
 
 from dotenv import load_dotenv
+from google.genai import errors as genai_errors
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
@@ -160,12 +161,18 @@ reviewer covers those. If you find nothing in your area, return APPROVE.
 """.strip()
 
 
-def _is_rate_limited(exc: BaseException) -> bool:
-    """A per-minute 429 is worth waiting out; a spent daily quota is not."""
+def _is_transient(exc: BaseException) -> bool:
+    """Worth retrying: a per-minute 429 or a Gemini server fault (5xx).
+
+    A spent daily quota is not -- it will not recover within the retry window.
+    """
     text = str(exc)
     if "PerDay" in text:
         return False
-    return "RESOURCE_EXHAUSTED" in text or "429" in text
+    if isinstance(exc, genai_errors.ServerError):
+        return True
+    markers = ("RESOURCE_EXHAUSTED", "429", "UNAVAILABLE", "503", "INTERNAL", "500")
+    return any(marker in text for marker in markers)
 
 
 # The Gemini free tier allows 5 requests per minute, and one review is exactly 5
@@ -173,8 +180,9 @@ def _is_rate_limited(exc: BaseException) -> bool:
 # fail-closed runner turned into "Review incomplete" rejections. Waiting out the
 # quota window instead costs latency nobody is watching (this runs in the
 # background); the random jitter stops the five reviewers retrying in lockstep.
+# Gemini also returns occasional 5xx under load, which are retried the same way.
 @retry(
-    retry=retry_if_exception(_is_rate_limited),
+    retry=retry_if_exception(_is_transient),
     wait=wait_random_exponential(multiplier=15, max=60),
     stop=stop_after_attempt(6),
     reraise=True,

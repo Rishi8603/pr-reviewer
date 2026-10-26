@@ -349,6 +349,30 @@ class TestRateLimitRetry(unittest.TestCase):
         self.assertEqual(verdict.verdict, "APPROVE")
         self.assertEqual(len(calls), 3)
 
+    def test_server_error_is_retried(self):
+        calls = []
+
+        class OverloadedLLM:
+            def invoke(self, _prompt):
+                calls.append(1)
+                if len(calls) < 2:
+                    raise RuntimeError("503 UNAVAILABLE: The model is overloaded.")
+                return approve()
+
+        self.assertEqual(self._run_with(OverloadedLLM()).verdict, "APPROVE")
+        self.assertEqual(len(calls), 2)
+
+    def test_spent_daily_quota_is_not_retried(self):
+        calls = []
+
+        class OutOfQuotaLLM:
+            def invoke(self, _prompt):
+                calls.append(1)
+                raise RuntimeError("429 RESOURCE_EXHAUSTED GenerateRequestsPerDayPerProjectPerModel")
+
+        self.assertEqual(self._run_with(OutOfQuotaLLM()).verdict, "REQUEST_CHANGES")
+        self.assertEqual(len(calls), 1)
+
     def test_other_errors_are_not_retried_and_fail_closed(self):
         calls = []
 
