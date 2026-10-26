@@ -21,6 +21,7 @@ from collections import OrderedDict
 import requests
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse
 
 from analytics import router as analytics_router
 from database import check_connection as check_db_connection
@@ -292,7 +293,14 @@ def root() -> dict:
         "service": "Autonomous CI/CD PR Review Swarm",
         "webhook": "POST /webhook",
         "health": "GET /health",
+        "dashboard": "GET /dashboard",
     }
+
+
+@app.get("/dashboard", include_in_schema=False)
+def dashboard() -> FileResponse:
+    """A static page that renders the /analytics endpoints in the browser."""
+    return FileResponse(os.path.join(os.path.dirname(__file__), "dashboard.html"))
 
 
 @app.get("/health")

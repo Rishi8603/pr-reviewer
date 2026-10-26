@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PR Review Swarm Analytics</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1b1f24; --muted: #5f6b7a;
+    --border: #e1e5ea; --accent: #2f6fdf; --good: #1f8a4c; --bad: #c4372f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --card: #171b21; --text: #e6e9ed; --muted: #95a1af;
+      --border: #2a3038; --accent: #6b9cf0; --good: #4cc27f; --bad: #ef6b62;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1000px; margin: 0 auto; padding: 32px 16px 48px; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 32px 0 12px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+  .tile { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .tile .value { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tile .label { color: var(--muted); font-size: 13px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 13px; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: none; }
+  .empty { color: var(--muted); padding: 16px; }
+  .bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; min-width: 120px; background: var(--border); }
+  .bar .ok { background: var(--good); }
+  .bar .no { background: var(--bad); }
+  .error { color: var(--bad); }
+  footer { margin-top: 32px; color: var(--muted); font-size: 13px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>PR Review Swarm Analytics</h1>
+  <p class="sub">Live data from the PostgreSQL audit trail, via the <code>/analytics</code> API.</p>
+
+  <div class="tiles" id="summary"></div>
+
+  <h2>Repositories (last 30 days)</h2>
+  <div class="card" id="overview"></div>
+
+  <h2>Weekly trend</h2>
+  <div class="card" id="trends"></div>
+
+  <h2>Code hotspots</h2>
+  <div class="card" id="hotspots"></div>
+
+  <footer>
+    Source: <a href="https://github.com/Rishi8603/pr-reviewer">github.com/Rishi8603/pr-reviewer</a>
+  </footer>
+</main>
+<script>
+// Every value is inserted with textContent, never innerHTML: file paths and repo
+// names come from PR content and LLM output, so they must be treated as untrusted.
+function el(tag, text, className) {
+  const node = document.createElement(tag);
+  if (text !== undefined && text !== null) node.textContent = text;
+  if (className) node.className = className;
+  return node;
+}
+
+function table(target, columns, rows, emptyText) {
+  const box = document.getElementById(target);
+  box.replaceChildren();
+  if (!rows.length) { box.append(el("div", emptyText, "empty")); return; }
+  const t = el("table"), head = el("tr");
+  columns.forEach(c => head.append(el("th", c.label, c.num ? "num" : "")));
+  t.append(head);
+  rows.forEach(row => {
+    const tr = el("tr");
+    columns.forEach(c => {
+      const td = el("td", null, c.num ? "num" : "");
+      const value = c.render ? c.render(row) : row[c.key];
+      if (value instanceof Node) td.append(value); else td.textContent = value ?? "—";
+      tr.append(td);
+    });
+    t.append(tr);
+  });
+  box.append(t);
+}
+
+function approvalBar(approved, rejected) {
+  const total = approved + rejected, bar = el("div", null, "bar");
+  if (total) {
+    const ok = el("div", null, "ok"); ok.style.width = (100 * approved / total) + "%";
+    const no = el("div", null, "no"); no.style.width = (100 * rejected / total) + "%";
+    bar.append(ok, no);
+  }
+  bar.title = `${approved} approved, ${rejected} blocked`;
+  return bar;
+}
+
+async function get(path) {
+  const response = await fetch(path);
+  if (!response.ok) throw new Error(`${path} returned ${response.status}`);
+  return response.json();
+}
+
+async function load() {
+  try {
+    const [summary, overview, trends, hotspots] = await Promise.all([
+      get("/analytics/summary"), get("/analytics/overview"),
+      get("/analytics/trends"), get("/analytics/hotspots"),
+    ]);
+
+    const tiles = document.getElementById("summary");
+    [
+      ["PRs reviewed", summary.completed_prs],
+      ["Failed reviews", summary.failed_prs],
+      ["Reviewer verdicts", summary.total_reviews],
+      ["Findings", summary.total_findings],
+      ["Critical findings", summary.critical_findings],
+      ["Repositories", summary.total_repos],
+    ].forEach(([label, value]) => {
+      const tile = el("div", null, "tile");
+      tile.append(el("div", value, "value"), el("div", label, "label"));
+      tiles.append(tile);
+    });
+
+    table("overview", [
+      { label: "Repository", key: "full_name" },
+      { label: "PRs reviewed", key: "total_prs_reviewed", num: true },
+      { label: "Approval rate", num: true, render: r => r.approval_rate_pct == null ? "—" : r.approval_rate_pct + "%" },
+      { label: "Avg review time", num: true, render: r => r.avg_review_seconds == null ? "—" : r.avg_review_seconds + " s" },
+    ], overview.repositories, "No reviews in the last 30 days yet.");
+
+    table("trends", [
+      { label: "Week of", render: r => r.week ? r.week.slice(0, 10) : "—" },
+      { label: "Reviews", key: "reviews", num: true },
+      { label: "Approved", key: "approved", num: true },
+      { label: "Blocked", key: "rejected", num: true },
+      { label: "", render: r => approvalBar(r.approved || 0, r.rejected || 0) },
+      { label: "Avg time", num: true, render: r => r.avg_duration_sec == null ? "—" : r.avg_duration_sec + " s" },
+    ], trends.trends, "No completed reviews yet.");
+
+    table("hotspots", [
+      { label: "Repository", key: "repo" },
+      { label: "File", key: "file_path" },
+      { label: "Findings", key: "total_findings", num: true },
+      { label: "Critical", key: "critical_count", num: true },
+      { label: "Warning", key: "warning_count", num: true },
+      { label: "From Security", key: "security_findings", num: true },
+    ], hotspots.hotspots, "No findings linked to a file yet.");
+  } catch (error) {
+    document.getElementById("summary").replaceChildren(
+      el("p", `Could not load analytics: ${error.message}`, "error"));
+  }
+}
+
+load();
+</script>
+</body>
+</html>
