@@ -1,0 +1,50 @@
+# Offline and integration tests. Free and deterministic, so they run on every
+# push. No API key is available here: nothing in this file calls Gemini.
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pr_reviewer_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      GOOGLE_API_KEY: test-key-unused
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/pr_reviewer_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt && pip install -r requirements-test.txt
+
+      - name: Install the browser
+        run: python -m playwright install --with-deps chromium
+
+      - name: Unit tests
+        run: python -m unittest test_review_swarm test_db_layer evals.test_eval_logic -v
+
+      - name: API and browser tests
+        run: python -m pytest integration -v

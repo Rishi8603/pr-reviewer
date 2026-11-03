@@ -217,6 +217,18 @@ python -m unittest discover -v
 logic that decides whether a PR merges, which is the part that should be
 verifiable without a network.
 
+The analytics API and the dashboard have their own tests, on a real PostgreSQL and
+in a real browser. They need a database with "test" in its name, because they wipe
+its tables:
+
+```bash
+pip install -r requirements-test.txt
+python -m playwright install chromium
+TEST_DATABASE_URL=postgresql://postgres@localhost:5432/pr_reviewer_test python -m pytest integration
+```
+
+The review quality itself is measured against real Gemini: see [evals/README.md](evals/README.md).
+
 ---
 
 ## Analytics endpoints

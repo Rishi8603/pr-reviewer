@@ -16,3 +16,7 @@ venv/
 # Local logs and editor tooling
 *.log
 .kilo/
+
+# Eval runs that are not kept as a reference point
+evals/results/ci.json
+INTERVIEW_WALKTHROUGH.md

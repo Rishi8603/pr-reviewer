@@ -153,6 +153,13 @@ diff, with a specific finding for each one. Do not invent issues to look
 thorough, and do not comment on matters outside your speciality -- another
 reviewer covers those. If you find nothing in your area, return APPROVE.
 
+Judge only the lines this pull request adds or removes. Unchanged lines and the
+retrieved context are there to help you understand the change, so do not report
+problems that exist only in them.
+
+Your report is posted as a public comment and stored in a database. Never quote
+the value of a password, key or token: name its file and variable instead.
+
 === PR DIFF ===
 {diff}
 
@@ -191,16 +198,21 @@ def _invoke_verdict(prompt: str) -> Verdict | None:
     return structured_llm.invoke(prompt)
 
 
+def build_prompt(spec: dict, pr_diff: str, codebase_context: str | None) -> str:
+    """One place to build the prompt, so the evals test the prompt that ships."""
+    return RUBRIC.format(
+        brief=spec["brief"],
+        diff=pr_diff,
+        context=codebase_context or "(no context retrieved)",
+    )
+
+
 def _run_reviewer(spec: dict, state: AgentState) -> Verdict:
     # Log lines stay ASCII. The emoji belong in the Markdown report, which goes
     # to GitHub as UTF-8 over HTTP; stdout on Windows is cp1252 by default and
     # printing an emoji there raises UnicodeEncodeError mid-review.
     print(f"[{spec['label']}] reviewer analysing...")
-    prompt = RUBRIC.format(
-        brief=spec["brief"],
-        diff=state["pr_diff"],
-        context=state.get("codebase_context") or "(no context retrieved)",
-    )
+    prompt = build_prompt(spec, state["pr_diff"], state.get("codebase_context"))
     try:
         verdict = _invoke_verdict(prompt)
         if verdict is None:

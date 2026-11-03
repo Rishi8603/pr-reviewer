@@ -1,0 +1,38 @@
+# Runs the golden dataset against the real model. It uses Gemini quota and takes
+# about 25 minutes, so it runs weekly and on demand instead of on every push. The
+# weekly run also catches what no commit shows: gemini-flash-lite-latest is an
+# alias, so the model can change underneath an unchanged codebase.
+name: LLM evals
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1"
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt && pip install -r requirements-test.txt
+
+      - name: Run evals and compare with the baseline
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: python -m evals.run_evals --label ci --baseline evals/results/baseline.json
+
+      - name: Keep the results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-eval-results
+          path: evals/results/ci.json

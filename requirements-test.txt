@@ -1,0 +1,12 @@
+# Install after requirements.txt, in a second step:
+#
+#     pip install -r requirements.txt
+#     pip install -r requirements-test.txt
+#
+# Not combined with "-r requirements.txt", because DeepEval needs an older click
+# than the one pinned there. Resolved together, pip backtracks to a DeepEval from
+# years ago that cannot even be imported. Installed in order, click steps down one
+# minor version, which affects only this test environment.
+deepeval==4.3.2
+playwright==1.64.1
+pytest==9.2.0

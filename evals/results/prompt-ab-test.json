@@ -1,0 +1,11 @@
+{
+  "case": "clean_typo_fix__qa",
+  "expected_verdict": "APPROVE",
+  "method": "10 rounds, each calling all three prompts in turn, 13 seconds apart",
+  "model": "gemini-flash-lite-latest",
+  "approved_out_of_10": {
+    "original": 10,
+    "with_secret_line": 4,
+    "with_secret_line_and_judge_only_changed_lines": 10
+  }
+}
