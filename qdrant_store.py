@@ -72,8 +72,8 @@ def open_qdrant(lock_timeout: float = -1):
 def collection_for(repo_full_name: str) -> str:
     """One collection per repository, so one repo's PRs never retrieve another's code.
 
-    With a single shared collection, the second repo to send a webhook found it
-    already warm and was reviewed against the first repo's code.
+    With a single shared collection, the second repo to send a webhook would find
+    it already warm and be reviewed against the first repo's code.
     """
     slug = re.sub(r"[^a-z0-9_-]", "_", repo_full_name.lower().replace("/", "__"))
     return COLLECTION_PREFIX + slug

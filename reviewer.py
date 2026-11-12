@@ -1,19 +1,16 @@
 """
 The review graph: five specialised reviewers fan out, one gate fans them in.
 
-Two things changed from the first version, both about trusting the gate:
+Two decisions keep the gate trustworthy:
 
-1. Reviewers return a constrained `Verdict` object instead of free prose that
-   was then string-matched. The old tally was `if "APPROVE" in report.upper()`,
-   which counted "I cannot approve this" and "DISAPPROVE" as approvals -- the
-   component advertised as the deterministic safeguard could silently pass a PR
-   every reviewer had rejected.
+1. Reviewers return a constrained `Verdict` object instead of free prose. A
+   substring tally over prose would count "I cannot approve this" and
+   "DISAPPROVE" as approvals, so a PR every reviewer rejected could still pass.
 
 2. The final Markdown is rendered in Python rather than by a sixth LLM call.
-   Once the tally is decided there is nothing left to reason about, and letting
-   a model narrate the outcome meant it could write encouraging prose over a
-   3/5 rejection. Removing it also drops one round-trip from a latency budget
-   the developer is sitting and waiting through.
+   Once the tally is decided there is nothing left to reason about, and a model
+   narrating the outcome could write encouraging prose over a 3/5 rejection. It
+   also saves one round-trip of latency.
 """
 
 import os
@@ -28,8 +25,8 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_random_
 
 load_dotenv()
 
-# Flash-Lite, because the free tier allows gemini-2.5-flash only 20 requests a
-# day -- four reviews -- while Flash-Lite caught every planted bug in the demo PRs.
+# Default to Flash-Lite; REVIEW_MODEL can override it. Quotas vary by model
+# and account, so the configured provider limits determine review capacity.
 LLM_MODEL = os.getenv("REVIEW_MODEL", "gemini-flash-lite-latest")
 
 # Low but not zero. Zero makes the model brittle on prompts it finds ambiguous;
@@ -86,7 +83,7 @@ structured_llm = llm.with_structured_output(Verdict)
 # =====================================================================
 # THE FIVE REVIEWERS
 # One spec per reviewer rather than five near-identical functions: adding a
-# sixth reviewer is one list entry plus one graph edge, and the shared runner
+# sixth reviewer is one list entry plus one AgentState key, and the shared runner
 # means the fail-closed behaviour cannot be forgotten in one of them.
 # =====================================================================
 REVIEWERS = [
@@ -175,12 +172,11 @@ def _is_transient(exc: BaseException) -> bool:
     return any(marker in text for marker in markers)
 
 
-# The Gemini free tier allows 5 requests per minute, and one review is exactly 5
-# calls. A second PR inside the same minute used to get 429s, which the
-# fail-closed runner turned into "Review incomplete" rejections. Waiting out the
-# quota window instead costs latency nobody is watching (this runs in the
-# background); the random jitter stops the five reviewers retrying in lockstep.
-# Gemini also returns occasional 5xx under load, which are retried the same way.
+# One review starts five chat calls; retries can add more. Concurrent PRs may
+# exceed the provider's quota and get 429s. Retry transient failures before the
+# runner turns them into "Review incomplete" rejections. Jitter reduces retry
+# collisions but does not guarantee recovery. These six outer attempts allow
+# at most 225 seconds of waits, plus call time and the client's own retries.
 @retry(
     retry=retry_if_exception(_is_transient),
     wait=wait_random_exponential(multiplier=15, max=60),

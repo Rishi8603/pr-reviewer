@@ -16,3 +16,4 @@ venv/
 # Local logs and editor tooling
 *.log
 .kilo/
+.neon

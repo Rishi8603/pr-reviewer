@@ -6,7 +6,7 @@ Five tables, normalised to 3NF:
     repositories ──< pull_requests ──< reviews ──< findings
                                    └──< review_consensus (1:1)
 
-Design decisions worth knowing for an interview:
+Design decisions:
 
 - **repositories** is separated from pull_requests so repo-level aggregations
   (approval rate per repo, most-reviewed repo) are a GROUP BY on a foreign key
@@ -19,9 +19,8 @@ Design decisions worth knowing for an interview:
   application layer.
 
 - **review_consensus** is 1:1 with pull_requests. It could be columns on
-  pull_requests, but separating it keeps the PR row immutable after creation
-  (the PR metadata is written at webhook time, consensus is written minutes later
-  after the swarm finishes).
+  pull_requests, but a failed review has no tally at all, and separating it
+  means those PRs simply have no consensus row instead of a set of NULLs.
 
 - **severity** on findings is an enum because the set of values is closed and
   small. PostgreSQL enums are stored as 4 bytes, compared to a variable-length

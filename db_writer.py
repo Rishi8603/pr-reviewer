@@ -6,10 +6,10 @@ transaction. If any part fails, nothing is partially committed — this is
 important because half-written data (a PR row with no reviews, or reviews with
 missing findings) would make the analytics queries return misleading numbers.
 
-This module deliberately does not import or call anything from the review
-pipeline; it only knows about database models and plain dicts. That separation
-means the review can run and succeed even if the database is down — the review
-still gets posted to GitHub, it just is not persisted for analytics.
+This module only turns a finished review into rows; it never runs any part of
+the review itself. That separation means the review can run and succeed even if
+the database is down — the review still gets posted to GitHub, it just is not
+persisted for analytics.
 """
 
 import re
@@ -85,8 +85,8 @@ def _get_or_reset_pr(db, repo: Repository, pr_number: int, head_sha: str) -> Pul
     """Return the row for this commit, clearing any earlier attempt's results.
 
     (repository, pr_number, head_sha) is unique, and a failed review is
-    released so the same commit can be retried. Always inserting a new row made
-    that retry hit the constraint, and the successful review was never saved.
+    released so the same commit can be retried. Always inserting a new row would
+    make that retry hit the constraint, and the successful review would be lost.
     """
     pr = (
         db.query(PullRequest)

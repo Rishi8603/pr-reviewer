@@ -2,9 +2,9 @@
 Tests for the PostgreSQL persistence layer and analytics helpers.
 
 These tests use SQLite in-memory as a stand-in for PostgreSQL so they run
-offline with no database server. The SQL dialect differences (no PERCENTILE_CONT,
-no DATE_TRUNC in SQLite) mean the analytics endpoint SQL is not tested here —
-those are integration tests that need a real PostgreSQL. What IS tested here is
+offline with no database server. SQLite has no DATE_TRUNC, so the analytics
+endpoint SQL is not tested here — those are integration tests that need a real
+PostgreSQL. What IS tested here is
 the transactional persistence logic, severity classification, and file path
 extraction logic.
 """

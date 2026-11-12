@@ -8,6 +8,8 @@ computed in Python.
 Deployed on Render free tier, where the filesystem is ephemeral — so the vector
 memory rebuilds itself from source on a cold boot.
 
+Read the [architecture map](ARCHITECTURE.md) for the whole flow on one page.
+
 ---
 
 ## How it works
@@ -95,7 +97,7 @@ refuse the merge.
 | 🧪 | QA / Tests | Missing tests, unhandled edge cases and boundaries |
 | 👔 | Product | Scope creep, unrelated refactoring, speculative abstraction |
 
-Adding a sixth is one entry in `REVIEWERS` — the runner and the gate size
+Adding a sixth takes one entry in `REVIEWERS` and one `AgentState` key — the runner and the gate size
 themselves off that list.
 
 ---
@@ -114,7 +116,8 @@ themselves off that list.
 | `models.py` | Five normalised tables: repositories, pull_requests, reviews, findings, review_consensus |
 | `db_writer.py` | Transactional persistence of completed reviews to PostgreSQL |
 | `analytics.py` | FastAPI router with four SQL-powered analytics endpoints |
-| `test_review_swarm.py` | 31 offline tests over the deterministic logic |
+| `test_review_swarm.py` | 37 offline tests over the deterministic logic |
+| `test_db_layer.py` | 21 offline tests over persistence and classification |
 
 `embeddings.py` exists so ingest and retrieval cannot drift onto different models
 or dimensionalities — their vectors would land in different spaces and cosine
@@ -213,7 +216,7 @@ button.
 python -m unittest discover -v
 ```
 
-31 tests, fully offline — no Gemini call, no Qdrant, no GitHub. They cover the
+58 tests, fully offline — no Gemini call, no Qdrant, no GitHub. They cover the
 logic that decides whether a PR merges, which is the part that should be
 verifiable without a network.
 
@@ -237,9 +240,9 @@ following endpoints become available:
 
 | | |
 |---|---|
-| Five reviewers, wall clock | **0.31 s** vs 1.50 s if run sequentially (0.3 s stub per reviewer) — a 4.8× overlap, asserted by a test |
+| Five reviewers, wall clock | **0.31 s** vs 1.50 s if run sequentially (0.3 s stub per reviewer) — a 4.8× overlap; a test asserts it stays at least 2× faster than sequential |
 | Render free-tier cold start | ~63 s before the first request is served |
-| LLM calls per review | 5 (one per reviewer) — the report is rendered in Python, not by a sixth call |
+| LLM calls per review | 5 initial chat calls (one per reviewer), plus any retries; the Python report adds none |
 
 The concurrency figure holds because fanning out from `START` puts all five nodes
 in one LangGraph superstep, LangGraph dispatches sync node callables to a

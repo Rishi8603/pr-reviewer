@@ -1,11 +1,11 @@
 """
 The online pipeline: a PR diff in, relevant existing code out.
 
-Retrieval is per changed file rather than per PR. The previous version embedded
-the entire diff as one vector, which had two problems:
+Retrieval is per changed file rather than per PR. Embedding the entire diff as
+one vector has two problems:
 
   1. gemini-embedding-001 caps input at 2048 tokens, so any real multi-file PR
-     was silently clamped to roughly its first file.
+     would be silently clamped to roughly its first file.
   2. Averaging an entire diff into a single point is weak retrieval even when it
      fits -- a PR touching auth and billing lands the query vector somewhere
      between the two, near neither.

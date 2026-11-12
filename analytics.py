@@ -2,8 +2,6 @@
 Analytics API — SQL-powered insights over the review audit trail.
 
 Four endpoints that query the PostgreSQL database for patterns in review data.
-Each query uses standard SQL features (GROUP BY, JOINs, CASE WHEN, DATE_TRUNC)
-that are straightforward to explain.
 
 These endpoints are read-only and do not affect the review pipeline. If the
 database is not configured, they all return a 503.

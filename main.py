@@ -62,8 +62,8 @@ def verify_signature(raw_body: bytes, signature_header: str | None) -> None:
     cannot be discovered one byte at a time by timing the responses.
     """
     if not WEBHOOK_SECRET:
-        # Unset is allowed so the local curl walkthrough in the README still
-        # works, but it is never correct in a deployment.
+        # Unset is allowed for local development, but it is never correct in a
+        # deployment.
         print("WARNING: GITHUB_WEBHOOK_SECRET is unset - signature verification disabled.")
         return
 

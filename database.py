@@ -25,13 +25,13 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if DATABASE_URL:
     engine = create_engine(
         DATABASE_URL,
-        # Five persistent connections cover the five concurrent reviewer threads;
-        # overflow handles a simultaneous webhook + health check.
+        # Reviewers never touch the database. These connections serve the worker's
+        # writes plus the analytics and health requests; overflow covers a burst.
         pool_size=5,
         max_overflow=3,
+        # Replace a connection the server dropped while it sat idle, rather than
+        # failing the next query on it.
         pool_pre_ping=True,
-        # Long reviews block the connection; the default 30s recycle is too
-        # aggressive for a cold-boot review that can take minutes.
         pool_recycle=1800,
     )
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)

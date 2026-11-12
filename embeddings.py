@@ -73,10 +73,9 @@ def _embed_batch(batch: list[str]) -> list[list[float]]:
 def embed_texts(texts: list[str]) -> list[list[float]]:
     """Embed many strings in as few round-trips as possible, order preserved.
 
-    The first version of this project made one API call per code block, so
-    indexing a repo with 400 functions meant 400 sequential HTTPS round-trips.
-    That was survivable in an offline script and is not survivable now that a
-    cold boot runs inside the PR review path.
+    One API call per code block would make indexing a repo with 400 functions
+    400 sequential HTTPS round-trips, and a cold boot runs inside the PR review
+    path.
     """
     if not texts:
         return []

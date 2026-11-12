@@ -8,9 +8,8 @@ Two entry points:
 
 `ensure_memory` is the self-healing step. Render's filesystem is ephemeral, so
 every deploy and every wake from spin-down comes up with ./qdrant_data gone.
-Before it existed the service booted with no collection and the first PR raised
-"Collection codebase_memory not found" inside a BackgroundTask -- GitHub had
-already been handed its 200, so the failure was completely invisible.
+Without it, the first PR would fail on a missing collection inside a
+BackgroundTask, after GitHub already had its 200, so nobody would see the error.
 """
 
 import ast
@@ -94,16 +93,13 @@ def extract_code_blocks(filepath: str, source_root: str | None = None) -> list[d
         })
         return True
 
-    # Walk only the top level of the module.
-    #
-    # The previous version used ast.walk(), which visits every descendant. That
-    # emitted each method twice -- once inside its class's source segment and
-    # once on its own -- which doubled the embedding bill and let a single large
+    # Walk only the top level of the module. ast.walk() visits every descendant,
+    # which would emit each method twice -- once inside its class's source segment
+    # and once on its own -- doubling the embedding bill and letting a single large
     # class crowd every other file out of the top-k.
     #
-    # It also matched only ast.FunctionDef, so every `async def` in the codebase
-    # was silently skipped. This service's own webhook handler is an async def,
-    # meaning the entrypoint was never in its own memory.
+    # AsyncFunctionDef has to be matched as well as FunctionDef, or every `async
+    # def` in the codebase would be silently skipped, webhook handlers included.
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             emit(node, node.name)
@@ -129,9 +125,9 @@ def extract_code_blocks(filepath: str, source_root: str | None = None) -> list[d
 def iter_python_files(repo_path: str):
     """Yield every .py file under repo_path, skipping vendored directories."""
     for root, dirs, files in os.walk(repo_path):
-        # Prune in place so os.walk never descends into these at all. The old
-        # `"venv" not in root` substring test both missed .venv and would have
-        # excluded any repo that happened to live under a path containing "venv".
+        # Prune in place so os.walk never descends into these at all. A substring
+        # test on the path would wrongly exclude any repo that happens to live
+        # under a path containing "venv".
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
         for name in sorted(files):
             if name.endswith(".py"):
